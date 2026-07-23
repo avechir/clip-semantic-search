@@ -20,4 +20,5 @@ The project is split into two simple scripts:
 
 ## Future Plans
 
+* LLM & LangChain Integration
 * Replace the local JSON storage with a dedicated vector database for better scalability.
