@@ -1,14 +1,14 @@
-import json
-import os
 import logging
 import torch
 from transformers import AutoProcessor, CLIPModel
+import chromadb
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
 
+
 class ImageSearchEngine:
-    def __init__(self, model_name="openai/clip-vit-base-patch32", vectors_path="img_vectors.json"):
+    def __init__(self, model_name="openai/clip-vit-base-patch32", db_path: str = "chroma_db", collection_name: str="image_embeddings"):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
         logger.info(f"Using device: {self.device.upper()}")
@@ -17,15 +17,12 @@ class ImageSearchEngine:
         self.processor = AutoProcessor.from_pretrained(model_name)
         logger.info("CLIP model loaded successfully.")
 
-        if not os.path.exists(vectors_path):
-            logger.error(f"Database file '{vectors_path}' not found!")
-            raise FileNotFoundError(f"Database file '{vectors_path}' not found.")
-        
-        with open(vectors_path, "r") as file:
-            self.image_vectors = json.load(file)
-        logger.info(f"Successfully loaded {len(self.image_vectors)} image vectors.")
+        self.client = chromadb.PersistentClient(path=db_path)
+        self.collection = self.client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
+        logger.info(f"Successfully initialized collection '{collection_name}' at '{db_path}'. "
+                    f"Current size: {self.collection.count()} embeddings.")
 
-    def get_text_embedding(self, text: str) -> torch.Tensor:
+    def get_text_embedding(self, text: str) -> list[float]:
         logger.info(f"Vectorizing text query: '{text}'")
         # Tokenize text and move tensors to the correct device
         inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
@@ -35,23 +32,20 @@ class ImageSearchEngine:
             text_features = text_features.pooler_output
             # L2 normalization
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        # Extract the 1D vector (shape [512] instead of [1, 512])
-        return text_features[0]
+        # Extract the 1D list
+        return text_features[0].cpu().tolist()
     
-    def search(self, text_query: str, top_k: int = 3) -> list:
+    def search(self, text_query: str, top_k: int = 3) -> list[tuple[str, float]]:
         logger.info(f"Starting search for query: '{text_query}' (top_k={top_k})")
         query_vector = self.get_text_embedding(text_query)
-        results = []
-        for img_name, img_vec in self.image_vectors.items():
-            img_tensor = torch.tensor(img_vec).to(self.device)
-            if img_tensor.ndim > 1: img_tensor = img_tensor[0]
-            img_tensor = img_tensor / img_tensor.norm(dim=-1, keepdim=True)
-            similarity = torch.dot(query_vector, img_tensor).item()
-            results.append((img_name, similarity))
-    
-        results.sort(reverse=True, key=lambda x: x[1])
-        logger.info(f"Search completed. Found {len(results)} total matches.")
-        return results[:top_k]
+        results = self.collection.query(query_embeddings=[query_vector], n_results=top_k)
+        image_ids = results['ids'][0]
+        distances = results['distances'][0]
+        formatted_results = []
+        for img_id, dist in zip(image_ids, distances):
+            similarity = 1 - dist
+            formatted_results.append((img_id, similarity))
+        return formatted_results
         
 
 if __name__ == "__main__":
