@@ -55,7 +55,7 @@ if __name__ == "__main__":
         engine = ImageSearchEngine()
         
         # Test with a sample text query
-        test_query = "something cozy" 
+        test_query = "wild animals not horses" 
         
         # Execute search
         matches = engine.search(test_query, top_k=3)
